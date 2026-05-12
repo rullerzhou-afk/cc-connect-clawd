@@ -175,12 +175,14 @@ const (
 
 // DisplayConfig controls how intermediate messages (thinking, tool output) are shown.
 type DisplayConfig struct {
-	Mode             *string `toml:"mode"`              // "full" (default), "compact", or "quiet"
-	CardMode         *string `toml:"card_mode"`         // "legacy" (default) or "rich" (Card 2.0 Feishu)
-	ThinkingMessages *bool   `toml:"thinking_messages"` // whether thinking messages are shown; default true
-	ThinkingMaxLen   *int    `toml:"thinking_max_len"`  // max chars for thinking messages; 0 = no truncation; default 300
-	ToolMaxLen       *int    `toml:"tool_max_len"`      // max chars for tool use messages; 0 = no truncation; default 500
-	ToolMessages     *bool   `toml:"tool_messages"`     // whether tool progress messages are shown; default true
+	Mode               *string `toml:"mode"`                 // "full" (default), "compact", or "quiet"
+	CardMode           *string `toml:"card_mode"`            // "legacy" (default) or "rich" (Card 2.0 Feishu)
+	ThinkingMessages   *bool   `toml:"thinking_messages"`    // whether thinking messages are shown; default true
+	ThinkingMaxLen     *int    `toml:"thinking_max_len"`     // max chars for thinking messages; 0 = no truncation; default 300
+	ToolMaxLen         *int    `toml:"tool_max_len"`         // max chars for tool use messages; 0 = no truncation; default 500
+	ToolMessages       *bool   `toml:"tool_messages"`        // whether tool progress messages are shown; default true
+	ShowContextIndicator *bool `toml:"show_context_indicator"` // whether [ctx: ~N%] suffix is shown; default true
+	ReplyFooter        *bool   `toml:"reply_footer"`         // whether Codex-like footer is shown; default true
 }
 
 // StreamPreviewConfig controls real-time streaming preview in IM.
@@ -636,7 +638,7 @@ func projectQuietEffective(cfg *Config, proj *ProjectConfig) bool {
 //  1. project-level [projects.display].<field> (highest precedence)
 //  2. global [display].<field>
 //  3. mode-derived default (compact/quiet → false, full → true)
-func EffectiveDisplay(cfg *Config, proj *ProjectConfig) (mode string, thinkingMessages, toolMessages bool, thinkingMaxLen, toolMaxLen int) {
+func EffectiveDisplay(cfg *Config, proj *ProjectConfig) (mode string, thinkingMessages, toolMessages bool, thinkingMaxLen, toolMaxLen int, showContextIndicator, replyFooter bool) {
 	var projDisp *DisplayConfig
 	if proj != nil {
 		projDisp = proj.Display
@@ -711,6 +713,29 @@ func EffectiveDisplay(cfg *Config, proj *ProjectConfig) (mode string, thinkingMe
 		cfg.Display.ToolMaxLen,
 		500,
 	)
+
+	// ShowContextIndicator precedence: proj.ShowContextIndicator > proj.Display.ShowContextIndicator > cfg.Display.ShowContextIndicator > default true
+	if proj != nil && proj.ShowContextIndicator != nil {
+		showContextIndicator = *proj.ShowContextIndicator
+	} else if projDisp != nil && projDisp.ShowContextIndicator != nil {
+		showContextIndicator = *projDisp.ShowContextIndicator
+	} else if cfg.Display.ShowContextIndicator != nil {
+		showContextIndicator = *cfg.Display.ShowContextIndicator
+	} else {
+		showContextIndicator = true
+	}
+
+	// ReplyFooter precedence: proj.ReplyFooter > proj.Display.ReplyFooter > cfg.Display.ReplyFooter > default true
+	if proj != nil && proj.ReplyFooter != nil {
+		replyFooter = *proj.ReplyFooter
+	} else if projDisp != nil && projDisp.ReplyFooter != nil {
+		replyFooter = *projDisp.ReplyFooter
+	} else if cfg.Display.ReplyFooter != nil {
+		replyFooter = *cfg.Display.ReplyFooter
+	} else {
+		replyFooter = true
+	}
+
 	return
 }
 
