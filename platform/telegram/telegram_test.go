@@ -86,6 +86,10 @@ type stubTelegramBot struct {
 	sendErr    error
 	getFileErr error
 	file       *models.File
+
+	lastSendMessage     *tgbot.SendMessageParams
+	lastEditMessageText *tgbot.EditMessageTextParams
+	lastAnswerCallback  *tgbot.AnswerCallbackQueryParams
 }
 
 func newStubTelegramBot() *stubTelegramBot {
@@ -94,9 +98,10 @@ func newStubTelegramBot() *stubTelegramBot {
 	}
 }
 
-func (b *stubTelegramBot) SendMessage(_ context.Context, _ *tgbot.SendMessageParams) (*models.Message, error) {
+func (b *stubTelegramBot) SendMessage(_ context.Context, params *tgbot.SendMessageParams) (*models.Message, error) {
 	b.mu.Lock()
 	b.sendMessageCalls++
+	b.lastSendMessage = params
 	b.mu.Unlock()
 	if b.sendErr != nil {
 		return nil, b.sendErr
@@ -154,9 +159,10 @@ func (b *stubTelegramBot) SendChatAction(_ context.Context, _ *tgbot.SendChatAct
 	return true, nil
 }
 
-func (b *stubTelegramBot) EditMessageText(_ context.Context, _ *tgbot.EditMessageTextParams) (*models.Message, error) {
+func (b *stubTelegramBot) EditMessageText(_ context.Context, params *tgbot.EditMessageTextParams) (*models.Message, error) {
 	b.mu.Lock()
 	b.editMessageTextCalls++
+	b.lastEditMessageText = params
 	b.mu.Unlock()
 	if b.sendErr != nil {
 		return nil, b.sendErr
@@ -174,9 +180,10 @@ func (b *stubTelegramBot) DeleteMessage(_ context.Context, _ *tgbot.DeleteMessag
 	return true, nil
 }
 
-func (b *stubTelegramBot) AnswerCallbackQuery(_ context.Context, _ *tgbot.AnswerCallbackQueryParams) (bool, error) {
+func (b *stubTelegramBot) AnswerCallbackQuery(_ context.Context, params *tgbot.AnswerCallbackQueryParams) (bool, error) {
 	b.mu.Lock()
 	b.answerCallbackCalls++
+	b.lastAnswerCallback = params
 	b.mu.Unlock()
 	return true, nil
 }
@@ -216,6 +223,110 @@ func (b *stubTelegramBot) SendMessageCallCount() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.sendMessageCalls
+}
+
+func TestSendPlainTextWithButtonsPreservesSpecialCharacters(t *testing.T) {
+	bot := newStubTelegramBot()
+	p := &Platform{bot: bot}
+	content := "run <cmd> & keep _literal_ *stars* `ticks`"
+
+	err := p.SendPlainTextWithButtons(context.Background(), replyContext{chatID: 42, threadID: 7}, content, [][]core.ButtonOption{{
+		{Text: "Allow", Data: "clawdperm:abc:allow"},
+		{Text: "Deny", Data: "clawdperm:abc:deny"},
+	}})
+	if err != nil {
+		t.Fatalf("SendPlainTextWithButtons() error: %v", err)
+	}
+	if bot.lastSendMessage == nil {
+		t.Fatal("SendMessage was not called")
+	}
+	if bot.lastSendMessage.Text != content {
+		t.Fatalf("Text = %q, want %q", bot.lastSendMessage.Text, content)
+	}
+	if bot.lastSendMessage.ParseMode != "" {
+		t.Fatalf("ParseMode = %q, want empty plain text mode", bot.lastSendMessage.ParseMode)
+	}
+	if bot.lastSendMessage.ChatID != int64(42) {
+		t.Fatalf("ChatID = %#v, want 42", bot.lastSendMessage.ChatID)
+	}
+	if bot.lastSendMessage.MessageThreadID != 7 {
+		t.Fatalf("MessageThreadID = %d, want 7", bot.lastSendMessage.MessageThreadID)
+	}
+	markup, ok := bot.lastSendMessage.ReplyMarkup.(*models.InlineKeyboardMarkup)
+	if !ok || len(markup.InlineKeyboard) != 1 {
+		t.Fatalf("ReplyMarkup = %#v, want one inline keyboard row", bot.lastSendMessage.ReplyMarkup)
+	}
+}
+
+func TestClawdCallbackBypassesAllowFromAndEditsResolvedMessage(t *testing.T) {
+	bot := newStubTelegramBot()
+	p := &Platform{allowFrom: "999", bot: bot}
+	var gotUserID, gotData string
+	p.SetClawdCallbackHandler(func(_ context.Context, fromUserID, data string) ClawdCallbackResult {
+		gotUserID = fromUserID
+		gotData = data
+		return ClawdCallbackResult{
+			AnswerText:    "Approved",
+			MessageSuffix: "Allowed",
+			EditMessage:   true,
+		}
+	})
+
+	p.handleCallbackQuery(context.Background(), &models.CallbackQuery{
+		ID:   "callback-1",
+		From: models.User{ID: 123},
+		Data: "clawdperm:req1:allow",
+		Message: models.MaybeInaccessibleMessage{Message: &models.Message{
+			ID:   77,
+			Text: "Approval body",
+			Chat: models.Chat{ID: 42},
+		}},
+	})
+
+	if gotUserID != "123" || gotData != "clawdperm:req1:allow" {
+		t.Fatalf("handler got user=%q data=%q", gotUserID, gotData)
+	}
+	if bot.answerCallbackCalls != 1 {
+		t.Fatalf("answerCallbackCalls = %d, want 1", bot.answerCallbackCalls)
+	}
+	if bot.lastAnswerCallback == nil || bot.lastAnswerCallback.Text != "Approved" {
+		t.Fatalf("lastAnswerCallback = %#v", bot.lastAnswerCallback)
+	}
+	if bot.editMessageTextCalls != 1 {
+		t.Fatalf("editMessageTextCalls = %d, want 1", bot.editMessageTextCalls)
+	}
+	if bot.lastEditMessageText == nil || bot.lastEditMessageText.Text != "Approval body\n\nAllowed" {
+		t.Fatalf("lastEditMessageText = %#v", bot.lastEditMessageText)
+	}
+}
+
+func TestClawdCallbackAnswersUnauthorizedWithoutEditing(t *testing.T) {
+	bot := newStubTelegramBot()
+	p := &Platform{allowFrom: "999", bot: bot}
+	p.SetClawdCallbackHandler(func(_ context.Context, fromUserID, data string) ClawdCallbackResult {
+		return ClawdCallbackResult{AnswerText: "Not authorized"}
+	})
+
+	p.handleCallbackQuery(context.Background(), &models.CallbackQuery{
+		ID:   "callback-2",
+		From: models.User{ID: 123},
+		Data: "clawdperm:req1:deny",
+		Message: models.MaybeInaccessibleMessage{Message: &models.Message{
+			ID:   77,
+			Text: "Approval body",
+			Chat: models.Chat{ID: 42},
+		}},
+	})
+
+	if bot.answerCallbackCalls != 1 {
+		t.Fatalf("answerCallbackCalls = %d, want 1", bot.answerCallbackCalls)
+	}
+	if bot.lastAnswerCallback == nil || bot.lastAnswerCallback.Text != "Not authorized" {
+		t.Fatalf("lastAnswerCallback = %#v", bot.lastAnswerCallback)
+	}
+	if bot.editMessageTextCalls != 0 {
+		t.Fatalf("editMessageTextCalls = %d, want 0", bot.editMessageTextCalls)
+	}
 }
 
 func (b *stubTelegramBot) SendChatActionCallCount() int {

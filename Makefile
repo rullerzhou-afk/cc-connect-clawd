@@ -1,6 +1,8 @@
 APP        := cc-connect
+CLAWD_APP  := cc-connect-clawd
 MODULE     := github.com/chenhg5/cc-connect
 CMD        := ./cmd/cc-connect
+CLAWD_CMD  := ./cmd/cc-connect-clawd
 DIST       := dist
 
 VERSION    := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -65,7 +67,7 @@ endif
 _BUILD_TAGS := $(strip $(_EXCLUDE_TAGS))
 _TAGS_FLAG  := $(if $(_BUILD_TAGS),-tags '$(_BUILD_TAGS)',)
 
-.PHONY: build run clean test test-fast test-full test-smoke test-e2e test-release test-release-local test-performance pre-test lint release release-all web
+.PHONY: build build-clawd run clean test test-fast test-full test-smoke test-e2e test-release test-release-local test-performance pre-test lint release release-all web
 
 web:
 	@if [ ! -d web/node_modules ]; then cd web && npm install; fi
@@ -76,6 +78,9 @@ build: web
 
 build-noweb:
 	go build $(_TAGS_FLAG) -tags 'no_web' -ldflags "$(LDFLAGS)" -o $(APP) $(CMD)
+
+build-clawd:
+	go build -ldflags "$(LDFLAGS)" -o $(CLAWD_APP) $(CLAWD_CMD)
 
 run: build
 	./$(APP)

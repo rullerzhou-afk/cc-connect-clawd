@@ -112,20 +112,29 @@ type Platform struct {
 	enableReactions       bool
 	httpClient            *http.Client
 
-	mu                  sync.RWMutex
-	bot                 telegramBot
-	selfUser            *models.User
-	handler             core.MessageHandler
-	lifecycleHandler    core.PlatformLifecycleHandler
-	cancel              context.CancelFunc
-	stopping            bool
-	generation          uint64
-	unavailableNotified bool
-	everConnected       bool
-	newBot              botFactory
-	newBackoffTimer     func(time.Duration) backoffTimer
-	newTypingTicker     func(time.Duration) typingTicker
+	mu                   sync.RWMutex
+	bot                  telegramBot
+	selfUser             *models.User
+	handler              core.MessageHandler
+	clawdCallbackHandler ClawdCallbackHandler
+	lifecycleHandler     core.PlatformLifecycleHandler
+	cancel               context.CancelFunc
+	stopping             bool
+	generation           uint64
+	unavailableNotified  bool
+	everConnected        bool
+	newBot               botFactory
+	newBackoffTimer      func(time.Duration) backoffTimer
+	newTypingTicker      func(time.Duration) typingTicker
 }
+
+type ClawdCallbackResult struct {
+	AnswerText    string
+	MessageSuffix string
+	EditMessage   bool
+}
+
+type ClawdCallbackHandler func(ctx context.Context, fromUserID, data string) ClawdCallbackResult
 
 const (
 	initialReconnectBackoff = time.Second
@@ -202,6 +211,12 @@ func (p *Platform) SetLifecycleHandler(h core.PlatformLifecycleHandler) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.lifecycleHandler = h
+}
+
+func (p *Platform) SetClawdCallbackHandler(h ClawdCallbackHandler) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.clawdCallbackHandler = h
 }
 
 func defaultNewBot(token string, onUpdate func(context.Context, *models.Update), httpClient *http.Client) (telegramBot, *models.User, func(context.Context), error) {
@@ -710,6 +725,11 @@ func (p *Platform) handleCallbackQuery(ctx context.Context, cb *models.CallbackQ
 	msgID := msg.ID
 	userID := strconv.FormatInt(cb.From.ID, 10)
 
+	if strings.HasPrefix(data, "clawdperm:") {
+		p.handleClawdCallbackQuery(ctx, bot, cb.ID, msg, data, userID)
+		return
+	}
+
 	if !core.AllowList(p.allowFrom, userID) {
 		slog.Debug("telegram: callback from unauthorized user", "user", userID)
 		return
@@ -864,6 +884,51 @@ func (p *Platform) handleCallbackQuery(ctx context.Context, cb *models.CallbackQ
 		ChannelKey: channelKey,
 		ReplyCtx:   rctx,
 	})
+}
+
+func (p *Platform) handleClawdCallbackQuery(ctx context.Context, bot telegramBot, callbackID string, msg *models.Message, data, userID string) {
+	handler := p.getClawdCallbackHandler()
+	result := ClawdCallbackResult{AnswerText: "Approval sidecar unavailable"}
+	if handler != nil {
+		result = handler(ctx, userID, data)
+	}
+	if strings.TrimSpace(result.AnswerText) == "" {
+		result.AnswerText = "Handled"
+	}
+
+	if _, err := bot.AnswerCallbackQuery(ctx, &tgbot.AnswerCallbackQueryParams{
+		CallbackQueryID: callbackID,
+		Text:            result.AnswerText,
+	}); err != nil {
+		slog.Debug("telegram: clawd callback answer failed", "error", err)
+	}
+	if !result.EditMessage {
+		return
+	}
+
+	suffix := strings.TrimSpace(result.MessageSuffix)
+	if suffix == "" {
+		suffix = result.AnswerText
+	}
+	origText := msg.Text
+	if origText == "" {
+		origText = "(approval request)"
+	}
+	emptyMarkup := &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{}}
+	if _, err := bot.EditMessageText(ctx, &tgbot.EditMessageTextParams{
+		ChatID:      msg.Chat.ID,
+		MessageID:   msg.ID,
+		Text:        origText + "\n\n" + suffix,
+		ReplyMarkup: emptyMarkup,
+	}); err != nil {
+		slog.Debug("telegram: clawd callback edit failed", "error", err)
+	}
+}
+
+func (p *Platform) getClawdCallbackHandler() ClawdCallbackHandler {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.clawdCallbackHandler
 }
 
 // isDirectedAtBot checks whether a group message is directed at this bot:
@@ -1203,6 +1268,40 @@ func (p *Platform) SendWithButtons(ctx context.Context, rctx any, content string
 		if err != nil {
 			return fmt.Errorf("telegram: sendWithButtons: %w", err)
 		}
+	}
+	return nil
+}
+
+// SendPlainTextWithButtons sends a message with inline buttons without Markdown
+// or HTML parsing. Clawd approval cards use this path so tool names and
+// summaries containing characters such as <, >, &, _, *, or ` stay literal.
+func (p *Platform) SendPlainTextWithButtons(ctx context.Context, rctx any, content string, buttons [][]core.ButtonOption) error {
+	rc, ok := rctx.(replyContext)
+	if !ok {
+		return fmt.Errorf("telegram: invalid reply context type %T", rctx)
+	}
+	bot, err := p.connectedBot("send plain text with buttons")
+	if err != nil {
+		return err
+	}
+
+	var rows [][]models.InlineKeyboardButton
+	for _, row := range buttons {
+		var btns []models.InlineKeyboardButton
+		for _, b := range row {
+			btns = append(btns, models.InlineKeyboardButton{Text: b.Text, CallbackData: b.Data})
+		}
+		rows = append(rows, btns)
+	}
+
+	params := &tgbot.SendMessageParams{
+		ChatID:          rc.chatID,
+		MessageThreadID: rc.threadID,
+		Text:            content,
+		ReplyMarkup:     &models.InlineKeyboardMarkup{InlineKeyboard: rows},
+	}
+	if _, err := bot.SendMessage(ctx, params); err != nil {
+		return fmt.Errorf("telegram: sendPlainTextWithButtons: %w", err)
 	}
 	return nil
 }
