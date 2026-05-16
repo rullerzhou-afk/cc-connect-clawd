@@ -46,7 +46,7 @@ func LoadConfig(path string) (Config, error) {
 	}
 	meta, err := toml.Decode(string(data), &cfg)
 	if err != nil {
-		return Config{}, fmt.Errorf("clawdbridge: parse config: %w", err)
+		return Config{}, fmt.Errorf("clawdbridge: parse config failed")
 	}
 	for _, key := range meta.Undecoded() {
 		for _, part := range key {
@@ -56,7 +56,7 @@ func LoadConfig(path string) (Config, error) {
 		}
 	}
 	if err := cfg.NormalizeAndValidate(); err != nil {
-		return Config{}, err
+		return Config{}, fmt.Errorf("%s", RedactTextWithSecrets(err.Error(), cfg.RedactionSecrets()))
 	}
 	return cfg, nil
 }
@@ -137,7 +137,7 @@ func (c Config) RedactionSecrets() []string {
 func validateListenAddr(addr string) error {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
-		return fmt.Errorf("clawdbridge: invalid listen_addr: %w", err)
+		return fmt.Errorf("clawdbridge: invalid listen_addr")
 	}
 	if port == "" {
 		return fmt.Errorf("clawdbridge: listen_addr port is required")

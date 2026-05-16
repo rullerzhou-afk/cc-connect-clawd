@@ -88,6 +88,41 @@ bot_token = "do-not-store-this"
 	}
 }
 
+func TestLoadConfigParseErrorDoesNotEchoRawValues(t *testing.T) {
+	path := writeConfig(t, `
+enabled = true
+target_session_key = "telegram:123456789
+allowed_tg_user_id = "123456789"
+`)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("LoadConfig() error = nil, want parse error")
+	}
+	for _, leaked := range []string{"telegram:123456789", "123456789"} {
+		if strings.Contains(err.Error(), leaked) {
+			t.Fatalf("error leaked config value %q: %q", leaked, err.Error())
+		}
+	}
+	if !strings.Contains(err.Error(), "parse config") {
+		t.Fatalf("error = %q, want parse config", err.Error())
+	}
+}
+
+func TestLoadConfigValidationErrorDoesNotEchoChatID(t *testing.T) {
+	path := writeConfig(t, `
+enabled = true
+target_session_key = "telegram:123456789:thread"
+allowed_tg_user_id = "123456789"
+`)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("LoadConfig() error = nil, want validation error")
+	}
+	if strings.Contains(err.Error(), "123456789") {
+		t.Fatalf("error leaked chat id: %q", err.Error())
+	}
+}
+
 func TestConfigRejectsNonLocalListenAddr(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.ListenAddr = "0.0.0.0:0"

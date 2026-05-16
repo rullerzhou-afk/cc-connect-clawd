@@ -24,6 +24,7 @@ import (
 const (
 	configPathEnv   = "CLAWD_BRIDGE_CONFIG"
 	botTokenFileEnv = "CLAWD_TG_BOT_TOKEN_FILE"
+	clawdAppName    = "Clawd on Desk"
 	readyTimeout    = 20 * time.Second
 	stopTimeout     = 5 * time.Second
 )
@@ -69,7 +70,7 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) er
 	}
 	replyCtx, err := platform.ReconstructReplyCtx(cfg.TargetSessionKey)
 	if err != nil {
-		return fmt.Errorf("clawdbridge: reconstruct Telegram target: %w", err)
+		return redactConfigError(fmt.Errorf("clawdbridge: reconstruct Telegram target: %w", err), cfg)
 	}
 
 	broker := clawdbridge.NewBroker(cfg.TTL())
@@ -86,7 +87,7 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) er
 		}
 	}()
 	if err := waitForPlatformReady(readyCh, unavailableCh, readyTimeout); err != nil {
-		return err
+		return redactConfigError(err, cfg)
 	}
 
 	server, err := clawdbridge.NewServer(clawdbridge.ServerOptions{
@@ -96,10 +97,10 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) er
 		HandshakeWriter: stdout,
 	})
 	if err != nil {
-		return err
+		return redactConfigError(err, cfg)
 	}
 	if err := server.Start(); err != nil {
-		return err
+		return redactConfigError(err, cfg)
 	}
 	started = true
 
@@ -112,9 +113,9 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) er
 	serverErr := server.Stop(shutdownCtx)
 	platformErr := platform.Stop()
 	if serverErr != nil {
-		return serverErr
+		return redactConfigError(serverErr, cfg)
 	}
-	return platformErr
+	return redactConfigError(platformErr, cfg)
 }
 
 func noopMessageHandler(core.Platform, *core.Message) {}
@@ -182,16 +183,70 @@ func platformReadyChannels(p *telegram.Platform) (<-chan struct{}, <-chan error)
 }
 
 func waitForPlatformReady(readyCh <-chan struct{}, unavailableCh <-chan error, timeout time.Duration) error {
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	select {
-	case <-readyCh:
-		return nil
-	case err := <-unavailableCh:
-		return fmt.Errorf("clawdbridge: Telegram platform unavailable during startup: %w", err)
-	case <-timer.C:
-		return fmt.Errorf("clawdbridge: Telegram platform did not become ready within %s", timeout)
+	if timeout <= 0 {
+		timeout = readyTimeout
 	}
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+
+	var lastUnavailable error
+	var unavailableTimer *time.Timer
+	var unavailableC <-chan time.Time
+	defer func() {
+		if unavailableTimer != nil {
+			unavailableTimer.Stop()
+		}
+	}()
+
+	for {
+		select {
+		case <-readyCh:
+			return nil
+		case err := <-unavailableCh:
+			if err == nil {
+				err = errors.New("unknown Telegram platform error")
+			}
+			lastUnavailable = err
+			grace := unavailableGrace(timeout)
+			if unavailableTimer == nil {
+				unavailableTimer = time.NewTimer(grace)
+				unavailableC = unavailableTimer.C
+			} else {
+				if !unavailableTimer.Stop() {
+					select {
+					case <-unavailableTimer.C:
+					default:
+					}
+				}
+				unavailableTimer.Reset(grace)
+			}
+		case <-unavailableC:
+			return fmt.Errorf("clawdbridge: Telegram platform unavailable during startup: %w", lastUnavailable)
+		case <-deadline.C:
+			if lastUnavailable != nil {
+				return fmt.Errorf("clawdbridge: Telegram platform did not become ready within %s: %w", timeout, lastUnavailable)
+			}
+			return fmt.Errorf("clawdbridge: Telegram platform did not become ready within %s", timeout)
+		}
+	}
+}
+
+func unavailableGrace(timeout time.Duration) time.Duration {
+	grace := timeout / 2
+	if grace <= 0 {
+		return timeout
+	}
+	if grace > 3*time.Second {
+		return 3 * time.Second
+	}
+	return grace
+}
+
+func redactConfigError(err error, cfg clawdbridge.Config) error {
+	if err == nil {
+		return nil
+	}
+	return errors.New(clawdbridge.RedactTextWithSecrets(err.Error(), cfg.RedactionSecrets()))
 }
 
 func loadBotToken(envFile string, getenv func(string) string) (string, error) {
@@ -265,24 +320,28 @@ func defaultTokenEnvFilePath(getenv func(string) string) string {
 }
 
 func defaultUserDataDir(getenv func(string) string) string {
-	switch runtime.GOOS {
+	return defaultUserDataDirForGOOS(runtime.GOOS, getenv)
+}
+
+func defaultUserDataDirForGOOS(goos string, getenv func(string) string) string {
+	switch goos {
 	case "windows":
 		if dir := strings.TrimSpace(getenv("APPDATA")); dir != "" {
-			return filepath.Join(dir, "clawd-on-desk")
+			return filepath.Join(dir, clawdAppName)
 		}
 		if home := strings.TrimSpace(getenv("USERPROFILE")); home != "" {
-			return filepath.Join(home, "AppData", "Roaming", "clawd-on-desk")
+			return filepath.Join(home, "AppData", "Roaming", clawdAppName)
 		}
 	case "darwin":
 		if home := strings.TrimSpace(getenv("HOME")); home != "" {
-			return filepath.Join(home, "Library", "Application Support", "clawd-on-desk")
+			return filepath.Join(home, "Library", "Application Support", clawdAppName)
 		}
 	default:
 		if dir := strings.TrimSpace(getenv("XDG_CONFIG_HOME")); dir != "" {
-			return filepath.Join(dir, "clawd-on-desk")
+			return filepath.Join(dir, clawdAppName)
 		}
 		if home := strings.TrimSpace(getenv("HOME")); home != "" {
-			return filepath.Join(home, ".config", "clawd-on-desk")
+			return filepath.Join(home, ".config", clawdAppName)
 		}
 	}
 	return ""
