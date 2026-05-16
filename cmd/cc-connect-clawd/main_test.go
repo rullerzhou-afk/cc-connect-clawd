@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -12,6 +13,21 @@ import (
 
 	"github.com/chenhg5/cc-connect/internal/clawdbridge"
 )
+
+func TestRunVersionDoesNotRequireConfigOrToken(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run([]string{"--version"}, &stdout, &stderr, func(string) string { return "" }); err != nil {
+		t.Fatalf("run(--version) error: %v", err)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "cc-connect-clawd ") || !strings.Contains(out, "commit:") || !strings.Contains(out, "built:") {
+		t.Fatalf("version output = %q", out)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
 
 func TestLoadBotTokenPrefersEnvironment(t *testing.T) {
 	envPath := filepath.Join(t.TempDir(), "token.env")

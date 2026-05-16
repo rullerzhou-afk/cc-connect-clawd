@@ -67,7 +67,7 @@ endif
 _BUILD_TAGS := $(strip $(_EXCLUDE_TAGS))
 _TAGS_FLAG  := $(if $(_BUILD_TAGS),-tags '$(_BUILD_TAGS)',)
 
-.PHONY: build build-clawd run clean test test-fast test-full test-smoke test-e2e test-release test-release-local test-performance pre-test lint release release-all web
+.PHONY: build build-clawd release-clawd-sidecar release-clawd-sidecar-manifest release-clawd-sidecar-dry-run run clean test test-fast test-full test-smoke test-e2e test-release test-release-local test-performance pre-test lint release release-all web
 
 web:
 	@if [ ! -d web/node_modules ]; then cd web && npm install; fi
@@ -81,6 +81,17 @@ build-noweb:
 
 build-clawd:
 	go build -ldflags "$(LDFLAGS)" -o $(CLAWD_APP) $(CLAWD_CMD)
+
+CLAWD_SIDECAR_TARGET ?= all
+CLAWD_SIDECAR_OUT    ?= $(DIST)/clawd-sidecar
+
+release-clawd-sidecar:
+	go run ./cmd/clawd-sidecar-release --target "$(CLAWD_SIDECAR_TARGET)" --out "$(CLAWD_SIDECAR_OUT)"
+
+release-clawd-sidecar-manifest:
+	go run ./cmd/clawd-sidecar-release --target "$(CLAWD_SIDECAR_TARGET)" --out "$(CLAWD_SIDECAR_OUT)" --dry-run
+
+release-clawd-sidecar-dry-run: release-clawd-sidecar-manifest
 
 run: build
 	./$(APP)

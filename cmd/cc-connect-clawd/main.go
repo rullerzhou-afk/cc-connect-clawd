@@ -29,6 +29,12 @@ const (
 	stopTimeout     = 5 * time.Second
 )
 
+var (
+	version   = "dev"
+	commit    = "none"
+	buildTime = "unknown"
+)
+
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr, os.Getenv); err != nil {
 		fmt.Fprintln(os.Stderr, clawdbridge.RedactText(err.Error()))
@@ -41,8 +47,13 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) er
 	fs.SetOutput(stderr)
 	configPath := fs.String("config", defaultConfigPath(getenv), "path to clawd bridge TOML config")
 	envFile := fs.String("env-file", defaultTokenEnvFilePath(getenv), "path to token env file")
+	showVersion := fs.Bool("version", false, "print version and exit")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *showVersion {
+		fmt.Fprintf(stdout, "cc-connect-clawd %s\ncommit:  %s\nbuilt:   %s\n", version, commit, buildTime)
+		return nil
 	}
 
 	slog.SetDefault(slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
