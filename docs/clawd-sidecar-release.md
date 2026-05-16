@@ -70,3 +70,22 @@ bin/cc-connect-clawd/<platform-arch>/cc-connect-clawd(.exe)
 Do not consume upstream `cc-connect` latest artifacts for Clawd builds. A future
 upstream pull request can be considered after the sidecar interface stabilizes,
 but that is outside this packaging step.
+
+## Upstream Updates
+
+Treat upstream `chenhg5/cc-connect` changes as an explicit dependency upgrade,
+not as an automatic latest-version feed. When upstream changes should be picked
+up for Clawd:
+
+1. Sync or merge upstream into this fork.
+2. Resolve conflicts without dropping `cmd/cc-connect-clawd`,
+   `internal/clawdbridge`, or the release helper.
+3. Run the Clawd sidecar Go tests and release helper tests.
+4. Build all supported sidecar targets with a fixed version, commit, and build
+   time.
+5. Publish a new fork release tag, for example `clawd-sidecar-v0.1.1`, with
+   archives and `checksums.txt`.
+6. Update Clawd's pinned sidecar tag and rerun its fetch/verify tests.
+
+This keeps Clawd release builds reproducible and checksum-verifiable while still
+allowing reviewed upstream updates.
