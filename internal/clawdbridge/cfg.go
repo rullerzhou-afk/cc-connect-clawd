@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +18,8 @@ const (
 	DefaultTTLSeconds = 90
 	DefaultTTL        = DefaultTTLSeconds * time.Second
 )
+
+var botTokenRE = regexp.MustCompile(`^\d+:[A-Za-z0-9_-]{30,}$`)
 
 type Config struct {
 	Enabled          bool   `toml:"enabled"`
@@ -153,6 +156,13 @@ func validateTelegramUserID(userID string) error {
 	n, err := strconv.ParseInt(userID, 10, 64)
 	if err != nil || n <= 0 {
 		return fmt.Errorf("clawdbridge: allowed_tg_user_id must be a positive numeric Telegram user id")
+	}
+	return nil
+}
+
+func ValidateBotToken(token string) error {
+	if !botTokenRE.MatchString(strings.TrimSpace(token)) {
+		return fmt.Errorf("clawdbridge: %s format is invalid", BotTokenEnv)
 	}
 	return nil
 }

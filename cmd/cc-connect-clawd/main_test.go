@@ -31,26 +31,29 @@ func TestRunVersionDoesNotRequireConfigOrToken(t *testing.T) {
 
 func TestLoadBotTokenPrefersEnvironment(t *testing.T) {
 	envPath := filepath.Join(t.TempDir(), "token.env")
-	if err := os.WriteFile(envPath, []byte(clawdbridge.BotTokenEnv+"=from-file\n"), 0o600); err != nil {
+	fileToken := "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"
+	envToken := "987654321:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"
+	if err := os.WriteFile(envPath, []byte(clawdbridge.BotTokenEnv+"="+fileToken+"\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile() error: %v", err)
 	}
 	token, err := loadBotToken(envPath, func(key string) string {
 		if key == clawdbridge.BotTokenEnv {
-			return "from-env"
+			return envToken
 		}
 		return ""
 	})
 	if err != nil {
 		t.Fatalf("loadBotToken() error: %v", err)
 	}
-	if token != "from-env" {
+	if token != envToken {
 		t.Fatalf("token = %q, want environment token", token)
 	}
 }
 
 func TestLoadBotTokenReadsEnvFile(t *testing.T) {
 	envPath := filepath.Join(t.TempDir(), "token.env")
-	content := "# comment\nexport " + clawdbridge.BotTokenEnv + "=\"from-file\"\n"
+	want := "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"
+	content := "# comment\nexport " + clawdbridge.BotTokenEnv + "=\"" + want + "\"\n"
 	if err := os.WriteFile(envPath, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile() error: %v", err)
 	}
@@ -58,8 +61,26 @@ func TestLoadBotTokenReadsEnvFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadBotToken() error: %v", err)
 	}
-	if token != "from-file" {
+	if token != want {
 		t.Fatalf("token = %q, want file token", token)
+	}
+}
+
+func TestLoadBotTokenRejectsInvalidFormatWithoutEchoingToken(t *testing.T) {
+	envPath := filepath.Join(t.TempDir(), "token.env")
+	badToken := "123:bad-token"
+	if err := os.WriteFile(envPath, []byte(clawdbridge.BotTokenEnv+"="+badToken+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+	_, err := loadBotToken(envPath, func(string) string { return "" })
+	if err == nil {
+		t.Fatal("loadBotToken() error = nil, want invalid token error")
+	}
+	if strings.Contains(err.Error(), badToken) {
+		t.Fatalf("error leaked token value: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "format is invalid") {
+		t.Fatalf("error = %q, want invalid format", err.Error())
 	}
 }
 
@@ -67,6 +88,26 @@ func TestLoadBotTokenRequiresToken(t *testing.T) {
 	_, err := loadBotToken(filepath.Join(t.TempDir(), "missing.env"), func(string) string { return "" })
 	if err == nil {
 		t.Fatal("loadBotToken() error = nil, want missing token error")
+	}
+}
+
+func TestRedactingWriterMasksTokenAndKnownSecrets(t *testing.T) {
+	var buf bytes.Buffer
+	writer := newRedactingWriter(&buf)
+	writer.SetSecrets([]string{"telegram:123456789", "987654321"})
+	input := "bot=123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi chat=telegram:123456789 user=987654321\n"
+	n, err := writer.Write([]byte(input))
+	if err != nil {
+		t.Fatalf("Write() error: %v", err)
+	}
+	if n != len(input) {
+		t.Fatalf("Write() n = %d, want %d", n, len(input))
+	}
+	out := buf.String()
+	for _, secret := range []string{"123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi", "telegram:123456789", "987654321"} {
+		if strings.Contains(out, secret) {
+			t.Fatalf("redacted output still contains %q: %q", secret, out)
+		}
 	}
 }
 

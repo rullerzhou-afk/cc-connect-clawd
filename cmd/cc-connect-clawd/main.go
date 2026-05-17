@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -43,8 +44,9 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer, getenv func(string) string) error {
+	stderrRedactor := newRedactingWriter(stderr)
 	fs := flag.NewFlagSet("cc-connect-clawd", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs.SetOutput(stderrRedactor)
 	configPath := fs.String("config", defaultConfigPath(getenv), "path to clawd bridge TOML config")
 	envFile := fs.String("env-file", defaultTokenEnvFilePath(getenv), "path to token env file")
 	showVersion := fs.Bool("version", false, "print version and exit")
@@ -56,12 +58,13 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) er
 		return nil
 	}
 
-	slog.SetDefault(slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	slog.SetDefault(slog.New(slog.NewTextHandler(stderrRedactor, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
 	cfg, err := clawdbridge.LoadConfig(*configPath)
 	if err != nil {
 		return err
 	}
+	stderrRedactor.SetSecrets(cfg.RedactionSecrets())
 	if !cfg.Enabled {
 		slog.Info("clawdbridge: disabled by config")
 		return nil
@@ -74,6 +77,7 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) er
 	if err != nil {
 		return err
 	}
+	stderrRedactor.SetSecrets(append(cfg.RedactionSecrets(), botToken))
 
 	platform, err := newTelegramPlatform(botToken, cfg)
 	if err != nil {
@@ -115,6 +119,10 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) er
 	}
 	started = true
 
+	// On Windows, Node's child.kill("SIGTERM") terminates the process rather
+	// than delivering an interceptable POSIX signal. This graceful path is
+	// exercised on POSIX and when Windows users stop the process from a console;
+	// Clawd still treats Windows shutdown as best-effort and can hard-kill.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	<-ctx.Done()
@@ -130,6 +138,41 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) er
 }
 
 func noopMessageHandler(core.Platform, *core.Message) {}
+
+type redactingWriter struct {
+	mu      sync.Mutex
+	writer  io.Writer
+	secrets []string
+}
+
+func newRedactingWriter(writer io.Writer) *redactingWriter {
+	if writer == nil {
+		writer = io.Discard
+	}
+	return &redactingWriter{writer: writer}
+}
+
+func (w *redactingWriter) SetSecrets(secrets []string) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.secrets = append([]string(nil), secrets...)
+}
+
+func (w *redactingWriter) Write(p []byte) (int, error) {
+	if w == nil || w.writer == nil {
+		return len(p), nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	text := clawdbridge.RedactTextWithSecrets(string(p), w.secrets)
+	if _, err := w.writer.Write([]byte(text)); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
 
 func newTelegramPlatform(botToken string, cfg clawdbridge.Config) (*telegram.Platform, error) {
 	p, err := telegram.New(map[string]any{
@@ -262,6 +305,9 @@ func redactConfigError(err error, cfg clawdbridge.Config) error {
 
 func loadBotToken(envFile string, getenv func(string) string) (string, error) {
 	if token := strings.TrimSpace(getenv(clawdbridge.BotTokenEnv)); token != "" {
+		if err := clawdbridge.ValidateBotToken(token); err != nil {
+			return "", err
+		}
 		return token, nil
 	}
 	values, err := readEnvFile(envFile)
@@ -269,6 +315,9 @@ func loadBotToken(envFile string, getenv func(string) string) (string, error) {
 		return "", err
 	}
 	if token := strings.TrimSpace(values[clawdbridge.BotTokenEnv]); token != "" {
+		if err := clawdbridge.ValidateBotToken(token); err != nil {
+			return "", err
+		}
 		return token, nil
 	}
 	return "", fmt.Errorf("clawdbridge: %s is required", clawdbridge.BotTokenEnv)
